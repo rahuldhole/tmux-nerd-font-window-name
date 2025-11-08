@@ -1,60 +1,51 @@
-#!/usr/bin/env bash
-
-# Check if yq command is available
-if ! command -v yq >/dev/null 2>&1; then
-  echo "$1 ⚠︎ yq missing"
-  exit 1
-fi
-
-# Define variables with arguments and config paths
+#!/bin/sh
 NAME="$1"
 PANES="$2"
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_CONFIG="$CURRENT_DIR/defaults.yml"
-USER_CONFIG="$HOME/.config/tmux/tmux-nerd-font-window-name.yml"
 
-# Function to retrieve a configuration value
-get_config_value() {
-  local key="$1"
-  local value=""
-  if [ -f "$USER_CONFIG" ]; then
-    value="$(yq -r "$key" "$USER_CONFIG")"
-    if [ "$value" == "null" ]; then
-      # Fallback to default config if key is not found in user config
-      value="$(yq -r "$key" "$DEFAULT_CONFIG")"
+# Default icon
+ICON=">_"
+
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+DEFAULT_CONFIG="$CURRENT_DIR/glyphnames.json"
+# Get the directory where this script is located
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Load user icons from JSON file (first priority)
+USER_ICONS="$HOME/.config/tmux/custom_icons.json"
+if [ -f "$USER_ICONS" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    USER_ICON=$(jq -r --arg name "$NAME" '.[$name] // empty' "$USER_ICONS" 2>/dev/null)
+    if [ -n "$USER_ICON" ] && [ "$USER_ICON" != "null" ]; then
+      ICON="$USER_ICON"
     fi
   else
-    value="$(yq -r "$key" "$DEFAULT_CONFIG")"
+    # Fallback: simple grep-based JSON parsing
+    USER_ICON=$(grep -o "\"$NAME\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$USER_ICONS" 2>/dev/null | sed -n 's/.*"\([^"]*\)"[[:space:]]*$/\1/p')
+    if [ -n "$USER_ICON" ]; then
+      ICON="$USER_ICON"
+    fi
   fi
-  echo "$value"
-}
-
-# Retrieve the icon based on the NAME argument
-ICON="$(get_config_value ".icons[\"$NAME\"]")"
-
-# Fallback icon if no specific icon is found
-if [ "$ICON" == "null" ] || [ -z "$ICON" ]; then
-  ICON="$(get_config_value '.config["fallback-icon"]')"
 fi
 
-# If multiple panes are open, add a multi-pane icon if available
+# If no user icon, try glyphnames.json (second priority)
+if [ "$ICON" = ">_" ] && [ -f "$DEFAULT_CONFIG" ]; then
+  if command -v jq >/dev/null 2>&1; then
+    # Try exact match first, then fallback patterns ex, seti-, md-, dev-
+    GLYPH_ICON=$(jq -r --arg name "$NAME" '
+      (.[$name] // 
+       .["seti-" + $name] // 
+       .["md-" + $name] // 
+       .["dev-" + $name] // 
+       empty).char' "$DEFAULT_CONFIG" 2>/dev/null)
+    if [ -n "$GLYPH_ICON" ] && [ "$GLYPH_ICON" != "null" ]; then
+      ICON="$GLYPH_ICON"
+    fi
+  fi
+fi
+
+# Add multi-pane indicator
 if [ "$PANES" -gt 1 ]; then
-  MULTI_PANE_ICON="$(get_config_value '.config["multi-pane-icon"]')"
-  if [ "$MULTI_PANE_ICON" != "null" ] && [ -n "$MULTI_PANE_ICON" ]; then
-    ICON="$MULTI_PANE_ICON $ICON"
-  fi
+  ICON=" $ICON"
 fi
 
-# Check if the window name should be displayed and set icon position
-SHOW_NAME="$(get_config_value '.config["show-name"]')"
-if [ "$SHOW_NAME" = "true" ]; then
-  ICON_POSITION="$(get_config_value '.config["icon-position"]')"
-  if [ "$ICON_POSITION" == "right" ]; then
-    ICON="$NAME $ICON"
-  else
-    ICON="$ICON $NAME"
-  fi
-fi
-
-# Output the final icon
-echo "$ICON"
+echo "$ICON $NAME"
