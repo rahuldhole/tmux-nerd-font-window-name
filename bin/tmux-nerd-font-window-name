@@ -1,51 +1,161 @@
-#!/bin/sh
+#!/usr/bin/env bash
+
 NAME="$1"
 PANES="$2"
 
-# Default icon
-ICON=">_"
+# ---------------------------------------------------------------------------
+# Config defaults (will be overridden by JSON config values if present)
+# ---------------------------------------------------------------------------
+FALLBACK_ICON="?"          # fallback when nothing matches
+MULTI_PANE_ICON=""        # icon to prefix when panes > 1
+SHOW_NAME="true"           # whether to include the window/process name
+ICON_POSITION="left"       # left|right position of icon relative to name
+ICON="$FALLBACK_ICON"      # working icon value passed into find_icon()
 
-CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-DEFAULT_CONFIG="$CURRENT_DIR/glyphnames.json"
 # Get the directory where this script is located
+CURRENT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Load user icons from JSON file (first priority)
-USER_ICONS="$HOME/.config/tmux/custom_icons.json"
-if [ -f "$USER_ICONS" ]; then
-  if command -v jq >/dev/null 2>&1; then
-    USER_ICON=$(jq -r --arg name "$NAME" '.[$name] // empty' "$USER_ICONS" 2>/dev/null)
+# Config file paths
+CUSTOM_ICONS_CONFIG="$HOME/.config/tmux/custom_icons_config.json"
+DEFAULT_ICONS_CONFIG="$CURRENT_DIR/default_icons_config.json"
+GLYPH_NAMES_CONFIG="$CURRENT_DIR/glyph_names.json"
+
+# ---------------------------------------------------------------------------
+# Functions
+# ---------------------------------------------------------------------------
+_load_config_value() {
+  _extract_string_key() {
+    # $1 = key, $2 = file
+    local key="$1" file="$2"
+    [ -f "$file" ] || return 1
+    # Match patterns like "fallback-icon": "?"
+    grep -E "\"$key\"[[:space:]]*:" "$file" | head -1 | sed -E "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\1/" 2>/dev/null
+  }
+
+  _extract_bool_key() {
+    # $1 = key, $2 = file (true|false)
+    local key="$1" file="$2"
+    [ -f "$file" ] || return 1
+    grep -E "\"$key\"[[:space:]]*:" "$file" | head -1 | sed -E "s/.*\"$key\"[[:space:]]*:[[:space:]]*(true|false).*/\1/" 2>/dev/null
+  }
+
+  # precedence: custom file -> default file -> existing var
+  local key="$1" type="$2" current="$3" value=""
+  if [ "$type" = "bool" ]; then
+    value=$(_extract_bool_key "$key" "$CUSTOM_ICONS_CONFIG")
+    [ -z "$value" ] && value=$(_extract_bool_key "$key" "$DEFAULT_ICONS_CONFIG")
+  else
+    value=$(_extract_string_key "$key" "$CUSTOM_ICONS_CONFIG")
+    [ -z "$value" ] && value=$(_extract_string_key "$key" "$DEFAULT_ICONS_CONFIG")
+  fi
+  if [ -n "$value" ]; then
+    echo "$value"
+  else
+    echo "$current" # keep existing default
+  fi
+}
+
+find_icon() {
+  load_user_icon() {
+  local name="$1"
+    if [ -f "$CUSTOM_ICONS_CONFIG" ]; then
+      grep -o "\"$name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$CUSTOM_ICONS_CONFIG" 2>/dev/null | sed -n 's/.*"\([^"]*\)"[[:space:]]*$/\1/p'
+    fi
+  }
+
+  load_default_icon() {
+    local name="$1"
+    if [ -f "$DEFAULT_ICONS_CONFIG" ]; then
+      grep -o "\"$name\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$DEFAULT_ICONS_CONFIG" 2>/dev/null | sed -n 's/.*"\([^"]*\)"[[:space:]]*$/\1/p'
+    fi
+  }
+
+  load_glyph_icon() {
+    local name="$1"
+    local char=""
+    
+    if [ -f "$GLYPH_NAMES_CONFIG" ] && [ -r "$GLYPH_NAMES_CONFIG" ]; then
+      # Read the JSON file and look for the glyph character
+      while IFS= read -r line; do
+        # Remove leading/trailing whitespace and commas
+        line=$(echo "$line" | sed 's/^[[:space:]]*//; s/,[[:space:]]*$//; s/[[:space:]]*$//')
+        
+        # Check for exact name match
+        if [[ "$line" =~ \"$name\"[[:space:]]*:[[:space:]]*\{[[:space:]]*\"char\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+          char="${BASH_REMATCH[1]}"
+          break
+        # Check for "seti-" prefix
+        elif [[ "$line" =~ \"seti-$name\"[[:space:]]*:[[:space:]]*\{[[:space:]]*\"char\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+          char="${BASH_REMATCH[1]}"
+          break
+        # Check for "md-" prefix  
+        elif [[ "$line" =~ \"md-$name\"[[:space:]]*:[[:space:]]*\{[[:space:]]*\"char\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+          char="${BASH_REMATCH[1]}"
+          break
+        # Check for "dev-" prefix
+        elif [[ "$line" =~ \"dev-$name\"[[:space:]]*:[[:space:]]*\{[[:space:]]*\"char\"[[:space:]]*:[[:space:]]*\"([^\"]*)\" ]]; then
+          char="${BASH_REMATCH[1]}"
+          break
+        fi
+      done < "$GLYPH_NAMES_CONFIG"
+    fi
+    
+    echo "$char"
+  }
+
+  # Load user icon
+  USER_ICON=$(load_user_icon "$NAME")
+  if [ -n "$USER_ICON" ] && [ "$USER_ICON" != "null" ]; then
+    ICON="$USER_ICON"
+  fi
+
+  # Load default icon if necessary
+  if [ "$ICON" = "$FALLBACK_ICON" ]; then
+    USER_ICON=$(load_default_icon "$NAME")
     if [ -n "$USER_ICON" ] && [ "$USER_ICON" != "null" ]; then
       ICON="$USER_ICON"
     fi
-  else
-    # Fallback: simple grep-based JSON parsing
-    USER_ICON=$(grep -o "\"$NAME\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" "$USER_ICONS" 2>/dev/null | sed -n 's/.*"\([^"]*\)"[[:space:]]*$/\1/p')
-    if [ -n "$USER_ICON" ]; then
-      ICON="$USER_ICON"
-    fi
   fi
-fi
 
-# If no user icon, try glyphnames.json (second priority)
-if [ "$ICON" = ">_" ] && [ -f "$DEFAULT_CONFIG" ]; then
-  if command -v jq >/dev/null 2>&1; then
-    # Try exact match first, then fallback patterns ex, seti-, md-, dev-
-    GLYPH_ICON=$(jq -r --arg name "$NAME" '
-      (.[$name] // 
-       .["seti-" + $name] // 
-       .["md-" + $name] // 
-       .["dev-" + $name] // 
-       empty).char' "$DEFAULT_CONFIG" 2>/dev/null)
+  # Load glyph icon if necessary
+  if [ "$ICON" = "$FALLBACK_ICON" ]; then
+    GLYPH_ICON=$(load_glyph_icon "$NAME")
     if [ -n "$GLYPH_ICON" ] && [ "$GLYPH_ICON" != "null" ]; then
       ICON="$GLYPH_ICON"
     fi
   fi
+
+  echo "$ICON"
+}
+
+# ---------------------------------------------------------------------------
+# Main Script Logic
+# ---------------------------------------------------------------------------
+
+# Populate config values from JSON (if present)
+FALLBACK_ICON="$(_load_config_value "fallback-icon" string "$FALLBACK_ICON")"
+MULTI_PANE_ICON="$(_load_config_value "multi-pane-icon" string "$MULTI_PANE_ICON")"
+SHOW_NAME="$(_load_config_value "show-name" bool "$SHOW_NAME")"
+ICON_POSITION="$(_load_config_value "icon-position" string "$ICON_POSITION")"
+
+# Reset working icon to (possibly updated) fallback before icon discovery
+ICON="$FALLBACK_ICON"
+
+ICON="$(find_icon "$NAME")"
+
+# Add multi-pane indicator if >1 pane and icon defined
+if [ "$PANES" -gt 1 ] && [ -n "$MULTI_PANE_ICON" ] && [ "$MULTI_PANE_ICON" != "null" ]; then
+  ICON="$MULTI_PANE_ICON $ICON"
 fi
 
-# Add multi-pane indicator
-if [ "$PANES" -gt 1 ]; then
-  ICON=" $ICON"
+# Build final output respecting SHOW_NAME and ICON_POSITION
+if [ "$SHOW_NAME" = "true" ]; then
+  if [ "$ICON_POSITION" = "right" ]; then
+    echo "$NAME $ICON"
+  else
+    echo "$ICON $NAME"
+  fi
+else
+  echo "$ICON"
 fi
-
-echo "$ICON $NAME"
